@@ -1,0 +1,117 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: resume-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      resume_net:
+        aliases:
+          - resume-db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: ${RESTART_POLICY:-unless-stopped}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ollama:
+    image: ollama/ollama:latest
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    volumes:
+      - ~/.ollama:/root/.ollama
+    networks:
+      - resume_net
+    restart: ${RESTART_POLICY:-unless-stopped}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Uncomment for NVIDIA GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  backend:
+    build: ./backend
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: resume-db
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+      FRONTEND_URL: http://resume.tyrelparker.dev
+      JWT_SECRET: ${JWT_SECRET}
+      PORT: 3001
+      AGENTIC_PARSE: ${AGENTIC_PARSE:-false}
+    volumes:
+      - ./backend/src:/app/src
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - resume_net
+    restart: ${RESTART_POLICY:-unless-stopped}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - proxy
+      - resume_net
+    restart: ${RESTART_POLICY:-unless-stopped}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.resume.rule=Host(`resume.tyrelparker.dev`)"
+      - "traefik.http.routers.resume.entrypoints=web"
+      - "traefik.http.routers.resume-secure.rule=Host(`resume.tyrelparker.dev`)"
+      - "traefik.http.routers.resume-secure.entrypoints=websecure"
+      - "traefik.http.routers.resume-secure.tls=true"
+      - "traefik.http.services.resume.loadbalancer.server.port=80"
+
+networks:
+  resume_net:
+    driver: bridge
+  proxy:
+    external: true
+
+volumes:
+  db_data:
